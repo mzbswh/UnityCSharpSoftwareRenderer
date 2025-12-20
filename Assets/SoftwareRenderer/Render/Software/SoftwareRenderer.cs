@@ -455,8 +455,67 @@ namespace SoftwareRenderer.Render.Software
             {
                 if (primitive.Vertices.Count >= 3)
                 {
-                    RasterizeTriangle(primitive.Vertices[0], primitive.Vertices[1], primitive.Vertices[2]);
+                    var v0 = primitive.Vertices[0];
+                    var v1 = primitive.Vertices[1];
+                    var v2 = primitive.Vertices[2];
+
+                    // 根据多边形模式选择渲染方式
+                    switch (_currentRenderStates.PolygonMode)
+                    {
+                        case EPolygonMode.Point:
+                            RasterizeTriangleAsPoints(v0, v1, v2);
+                            break;
+                        case EPolygonMode.Line:
+                            RasterizeTriangleAsLines(v0, v1, v2);
+                            break;
+                        case EPolygonMode.Fill:
+                            RasterizeTriangle(v0, v1, v2);
+                            break;
+                    }
                 }
+            }
+        }
+
+        /// <summary>
+        /// 将三角形渲染为点模式（只渲染三个顶点）
+        /// </summary>
+        private void RasterizeTriangleAsPoints(VertexHolder v0, VertexHolder v1, VertexHolder v2)
+        {
+            // 渲染三个顶点
+            RasterizePoint(v0);
+            RasterizePoint(v1);
+            RasterizePoint(v2);
+        }
+
+        /// <summary>
+        /// 将三角形渲染为线框模式（只渲染三条边）
+        /// </summary>
+        private void RasterizeTriangleAsLines(VertexHolder v0, VertexHolder v1, VertexHolder v2)
+        {
+            int x0 = Mathf.RoundToInt(v0.ScreenPos.x);
+            int y0 = Mathf.RoundToInt(v0.ScreenPos.y);
+            int x1 = Mathf.RoundToInt(v1.ScreenPos.x);
+            int y1 = Mathf.RoundToInt(v1.ScreenPos.y);
+            int x2 = Mathf.RoundToInt(v2.ScreenPos.x);
+            int y2 = Mathf.RoundToInt(v2.ScreenPos.y);
+
+            // 渲染三条边
+            DrawLine(x0, y0, x1, y1, v0, v1);
+            DrawLine(x1, y1, x2, y2, v1, v2);
+            DrawLine(x2, y2, x0, y0, v2, v0);
+        }
+
+        /// <summary>
+        /// 渲染单个点
+        /// </summary>
+        private void RasterizePoint(VertexHolder v)
+        {
+            int x = Mathf.RoundToInt(v.ScreenPos.x);
+            int y = Mathf.RoundToInt(v.ScreenPos.y);
+
+            if (x >= 0 && x < _viewport.Width && y >= 0 && y < _viewport.Height)
+            {
+                ProcessFragment(x, y, v.ScreenPos.z, v.Varyings, 0);
             }
         }
 

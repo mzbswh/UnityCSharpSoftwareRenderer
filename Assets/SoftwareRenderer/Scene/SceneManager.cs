@@ -32,6 +32,9 @@ namespace SoftwareRenderer.Scene
         public Material Material;
         public Matrix4x4 Transform = Matrix4x4.identity;
         public Core.Math.BoundingBox BoundingBox;
+        
+        // 保存原始Transform引用（用于实时同步）
+        public UnityEngine.Transform SourceTransform;
     }
 
     /// <summary>

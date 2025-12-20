@@ -21,6 +21,7 @@ namespace SoftwareRenderer.Unity
         public bool EnableMSAA = false;
         public bool EnableDepthTest = true;
         public bool EnableFaceCulling = true;
+        public EPolygonMode PolygonMode = EPolygonMode.Fill;
         public Color ClearColor = Color.black;
 
         [Header("测试场景")]
@@ -45,6 +46,24 @@ namespace SoftwareRenderer.Unity
         private IUniformBlock _uniformBlockModel;
         private IUniformBlock _uniformBlockMaterial;
 
+        // 相机控制
+        [Header("相机控制")]
+        public float CameraDistance = 5f;
+        public float RotationSpeed = 0.3f;
+        public float KeyboardRotationSpeed = 50f;
+        public float KeyboardMoveSpeed = 3f;
+        public float KeyboardZoomSpeed = 5f;
+        public KeyCode ResetCameraKey = KeyCode.R;
+
+        private float _initialDistance = 5f;
+        private float _initialYaw = 0f;
+        private float _initialPitch = 20f;
+
+        private float _cameraYaw = 0f;
+        private float _cameraPitch = 20f;
+        private bool _isDragging = false;
+        private Vector3 _lastMousePosition;
+
         void Start()
         {
             InitializeRenderer();
@@ -59,11 +78,14 @@ namespace SoftwareRenderer.Unity
 
             _sceneManager = new SceneManager();
             _sceneManager.MainCamera.SetPerspective(60f, (float)RenderWidth / RenderHeight, 0.1f, 100f);
-            _sceneManager.MainCamera.LookAt(
-                new Vector3(0, 2, 5),
-                Vector3.zero,
-                Vector3.up
-            );
+
+            // 保存初始相机参数
+            _initialDistance = CameraDistance;
+            _initialYaw = _cameraYaw;
+            _initialPitch = _cameraPitch;
+
+            // 初始化相机位置
+            UpdateCameraPosition();
 
             Debug.Log("Software Renderer initialized");
         }
@@ -119,7 +141,8 @@ namespace SoftwareRenderer.Unity
                         Vao = vao,
                         Transform = meshFilter.transform.localToWorldMatrix,
                         BoundingBox = MeshImporter.CalculateBoundingBox(meshFilter.sharedMesh),
-                        Material = CreateDefaultMaterial()
+                        Material = CreateDefaultMaterial(),
+                        SourceTransform = meshFilter.transform
                     };
 
                     _sceneManager.AddModel(modelData);
@@ -172,7 +195,7 @@ namespace SoftwareRenderer.Unity
             renderStates.DepthFunc = EDepthFunction.Less;
             renderStates.CullFace = EnableFaceCulling;
             renderStates.PrimitiveType = EPrimitiveType.Triangle;
-            renderStates.PolygonMode = EPolygonMode.Fill;
+            renderStates.PolygonMode = PolygonMode;
 
             material.PipelineStates = _renderer.CreatePipelineStates(renderStates);
 
@@ -220,6 +243,7 @@ namespace SoftwareRenderer.Unity
 
         void Update()
         {
+            HandleCameraInput();
             RenderFrame();
             UpdateOutput();
         }
@@ -227,6 +251,15 @@ namespace SoftwareRenderer.Unity
         void RenderFrame()
         {
             if (_renderer == null || _mainFrameBuffer == null) return;
+
+            // 更新所有模型的Transform（实时同步）
+            foreach (var model in _sceneManager.Models)
+            {
+                if (model.SourceTransform != null)
+                {
+                    model.Transform = model.SourceTransform.localToWorldMatrix;
+                }
+            }
 
             // 更新相机矩阵
             Matrix4x4 vpMatrix = _sceneManager.MainCamera.GetViewProjectionMatrix();
@@ -259,6 +292,25 @@ namespace SoftwareRenderer.Unity
 
                     if (model.Material.PipelineStates != null)
                     {
+                        // 实时更新PolygonMode（如果Inspector中的设置改变了）
+                        var currentStates = model.Material.PipelineStates.RenderStates;
+                        if (currentStates.PolygonMode != PolygonMode)
+                        {
+                            // 创建新的RenderStates，更新PolygonMode
+                            RenderStates newStates = new RenderStates
+                            {
+                                Blend = currentStates.Blend,
+                                BlendParams = currentStates.BlendParams,
+                                DepthTest = currentStates.DepthTest,
+                                DepthMask = currentStates.DepthMask,
+                                DepthFunc = currentStates.DepthFunc,
+                                CullFace = currentStates.CullFace,
+                                PrimitiveType = currentStates.PrimitiveType,
+                                PolygonMode = PolygonMode,
+                                LineWidth = currentStates.LineWidth
+                            };
+                            model.Material.PipelineStates = _renderer.CreatePipelineStates(newStates);
+                        }
                         _renderer.SetPipelineStates(model.Material.PipelineStates);
                     }
 
@@ -341,16 +393,222 @@ namespace SoftwareRenderer.Unity
             }
         }
 
-        void OnGUI()
+        #region 相机控制
+
+        void HandleCameraInput()
         {
-            GUILayout.BeginArea(new Rect(10, 10, 300, 200));
-            GUILayout.Label($"Software Renderer");
-            GUILayout.Label($"Resolution: {RenderWidth}x{RenderHeight}");
-            GUILayout.Label($"MSAA: {(EnableMSAA ? "4x" : "Off")}");
-            GUILayout.Label($"Models: {_sceneManager.Models.Count}");
-            GUILayout.Label($"FPS: {1f / Time.deltaTime:F1}");
-            GUILayout.EndArea();
+            // 按键重置相机
+            if (Input.GetKeyDown(ResetCameraKey))
+            {
+                ResetCamera();
+                return;
+            }
+
+            // 键盘控制
+            HandleKeyboardInput();
+
+            // 检测鼠标左键按下
+            if (Input.GetMouseButtonDown(0))
+            {
+                _isDragging = true;
+                _lastMousePosition = Input.mousePosition;
+            }
+
+            // 检测鼠标左键抬起
+            if (Input.GetMouseButtonUp(0))
+            {
+                _isDragging = false;
+            }
+
+            // 拖动旋转
+            if (_isDragging)
+            {
+                Vector3 mouseDelta = Input.mousePosition - _lastMousePosition;
+                _lastMousePosition = Input.mousePosition;
+
+                // 水平拖动控制Yaw（绕Y轴旋转）
+                _cameraYaw += mouseDelta.x * RotationSpeed;
+
+                // 垂直拖动控制Pitch（绕X轴旋转）
+                _cameraPitch -= mouseDelta.y * RotationSpeed;
+
+                // 限制俯仰角度，避免翻转
+                _cameraPitch = Mathf.Clamp(_cameraPitch, -89f, 89f);
+
+                // 更新相机位置
+                UpdateCameraPosition();
+            }
+
+            // 鼠标滚轮控制距离
+            float scroll = Input.GetAxis("Mouse ScrollWheel");
+            if (Mathf.Abs(scroll) > 0.01f)
+            {
+                CameraDistance -= scroll * 10f;
+                CameraDistance = Mathf.Clamp(CameraDistance, 1f, 20f);
+                UpdateCameraPosition();
+            }
         }
+
+        void HandleKeyboardInput()
+        {
+            bool needUpdate = false;
+            float deltaTime = Time.deltaTime;
+
+            // A/D - 左右旋转（Yaw）
+            if (Input.GetKey(KeyCode.A))
+            {
+                _cameraYaw += KeyboardRotationSpeed * deltaTime;
+                needUpdate = true;
+            }
+            if (Input.GetKey(KeyCode.D))
+            {
+                _cameraYaw -= KeyboardRotationSpeed * deltaTime;
+                needUpdate = true;
+            }
+
+            // W/S - 上下旋转（Pitch）
+            if (Input.GetKey(KeyCode.W))
+            {
+                _cameraPitch += KeyboardMoveSpeed * deltaTime * 10f;
+                _cameraPitch = Mathf.Clamp(_cameraPitch, -89f, 89f);
+                needUpdate = true;
+            }
+            if (Input.GetKey(KeyCode.S))
+            {
+                _cameraPitch -= KeyboardMoveSpeed * deltaTime * 10f;
+                _cameraPitch = Mathf.Clamp(_cameraPitch, -89f, 89f);
+                needUpdate = true;
+            }
+
+            // Q/E - 缩放（Zoom）
+            if (Input.GetKey(KeyCode.Q))
+            {
+                CameraDistance += KeyboardZoomSpeed * deltaTime;
+                CameraDistance = Mathf.Clamp(CameraDistance, 1f, 20f);
+                needUpdate = true;
+            }
+            if (Input.GetKey(KeyCode.E))
+            {
+                CameraDistance -= KeyboardZoomSpeed * deltaTime;
+                CameraDistance = Mathf.Clamp(CameraDistance, 1f, 20f);
+                needUpdate = true;
+            }
+
+            if (needUpdate)
+            {
+                UpdateCameraPosition();
+            }
+        }
+
+        void ResetCamera()
+        {
+            CameraDistance = _initialDistance;
+            _cameraYaw = _initialYaw;
+            _cameraPitch = _initialPitch;
+            UpdateCameraPosition();
+            Debug.Log("Camera reset to initial position");
+        }
+
+        void UpdateCameraPosition()
+        {
+            // 将欧拉角转换为球坐标
+            float yawRad = _cameraYaw * Mathf.Deg2Rad;
+            float pitchRad = _cameraPitch * Mathf.Deg2Rad;
+
+            // 计算相机位置（绕原点旋转）
+            Vector3 cameraPos = new Vector3(
+                CameraDistance * Mathf.Cos(pitchRad) * Mathf.Sin(yawRad),
+                CameraDistance * Mathf.Sin(pitchRad),
+                CameraDistance * Mathf.Cos(pitchRad) * Mathf.Cos(yawRad)
+            );
+
+            // 设置相机朝向原点
+            _sceneManager.MainCamera.LookAt(cameraPos, Vector3.zero, Vector3.up);
+        }
+
+        void OnDrawGizmos()
+        {
+            if (_sceneManager == null || _sceneManager.MainCamera == null) return;
+
+            // 获取相机位置
+            Vector3 cameraPos = _sceneManager.MainCamera.Eye;
+            Vector3 target = _sceneManager.MainCamera.Center;
+
+            // 绘制相机位置（黄色球体）
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawSphere(cameraPos, 0.2f);
+
+            // 绘制相机朝向（蓝色线）
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawLine(cameraPos, target);
+
+            // 绘制视锥体
+            DrawCameraFrustum(cameraPos, target);
+
+            // 绘制目标点（红色小球）
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(target, 0.1f);
+        }
+
+        void DrawCameraFrustum(Vector3 cameraPos, Vector3 target)
+        {
+            if (_sceneManager.MainCamera == null) return;
+
+            // 获取相机参数
+            float fov = _sceneManager.MainCamera.Fov;
+            float aspect = _sceneManager.MainCamera.Aspect;
+            float near = _sceneManager.MainCamera.Near;
+            float far = Mathf.Min(_sceneManager.MainCamera.Far, 10f); // 限制远平面用于显示
+
+            // 计算相机方向
+            Vector3 forward = (target - cameraPos).normalized;
+            Vector3 up = Vector3.up;
+            Vector3 right = Vector3.Cross(forward, up).normalized;
+            up = Vector3.Cross(right, forward).normalized;
+
+            // 计算近平面和远平面的尺寸
+            float nearHeight = 2f * Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * near;
+            float nearWidth = nearHeight * aspect;
+            float farHeight = 2f * Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * far;
+            float farWidth = farHeight * aspect;
+
+            // 近平面中心和角点
+            Vector3 nearCenter = cameraPos + forward * near;
+            Vector3 nearTL = nearCenter + up * (nearHeight * 0.5f) - right * (nearWidth * 0.5f);
+            Vector3 nearTR = nearCenter + up * (nearHeight * 0.5f) + right * (nearWidth * 0.5f);
+            Vector3 nearBL = nearCenter - up * (nearHeight * 0.5f) - right * (nearWidth * 0.5f);
+            Vector3 nearBR = nearCenter - up * (nearHeight * 0.5f) + right * (nearWidth * 0.5f);
+
+            // 远平面中心和角点
+            Vector3 farCenter = cameraPos + forward * far;
+            Vector3 farTL = farCenter + up * (farHeight * 0.5f) - right * (farWidth * 0.5f);
+            Vector3 farTR = farCenter + up * (farHeight * 0.5f) + right * (farWidth * 0.5f);
+            Vector3 farBL = farCenter - up * (farHeight * 0.5f) - right * (farWidth * 0.5f);
+            Vector3 farBR = farCenter - up * (farHeight * 0.5f) + right * (farWidth * 0.5f);
+
+            // 绘制视锥体
+            Gizmos.color = new Color(0, 1, 1, 0.3f); // 半透明青色
+
+            // 近平面
+            Gizmos.DrawLine(nearTL, nearTR);
+            Gizmos.DrawLine(nearTR, nearBR);
+            Gizmos.DrawLine(nearBR, nearBL);
+            Gizmos.DrawLine(nearBL, nearTL);
+
+            // 远平面
+            Gizmos.DrawLine(farTL, farTR);
+            Gizmos.DrawLine(farTR, farBR);
+            Gizmos.DrawLine(farBR, farBL);
+            Gizmos.DrawLine(farBL, farTL);
+
+            // 连接线
+            Gizmos.DrawLine(nearTL, farTL);
+            Gizmos.DrawLine(nearTR, farTR);
+            Gizmos.DrawLine(nearBL, farBL);
+            Gizmos.DrawLine(nearBR, farBR);
+        }
+
+        #endregion
     }
 }
 
