@@ -49,6 +49,9 @@ namespace SoftwareRenderer.Render.Software
         // Early-Z优化开关
         private bool _enableEarlyZ = true;
 
+        // 复用的PixelQuadContext，避免每次光栅化都创建新对象
+        private PixelQuadContext _reusableQuad = new PixelQuadContext();
+
         public void SetEnableEarlyZ(bool enable)
         {
             _enableEarlyZ = enable;
@@ -480,7 +483,7 @@ namespace SoftwareRenderer.Render.Software
         private void RasterizeTriangleWithPixelQuad(VertexHolder v0, VertexHolder v1, VertexHolder v2,
             int minX, int minY, int maxX, int maxY)
         {
-            PixelQuadContext quad = new PixelQuadContext();
+            PixelQuadContext quad = _reusableQuad; // 复用对象，避免GC
             int varyingSize = _currentShader.GetVaryingSize();
             quad.SetVaryingsSize(varyingSize);
             quad.ShaderProgram = _currentShader;
@@ -490,10 +493,18 @@ namespace SoftwareRenderer.Render.Software
             quad.VertPos[0] = v0.ScreenPos;
             quad.VertPos[1] = v1.ScreenPos;
             quad.VertPos[2] = v2.ScreenPos;
-            quad.VertW = new Vector4(v0.ScreenPos.w, v1.ScreenPos.w, v2.ScreenPos.w, 0);
+            quad.VertW.x = v0.ScreenPos.w;
+            quad.VertW.y = v1.ScreenPos.w;
+            quad.VertW.z = v2.ScreenPos.w;
+            quad.VertW.w = 0;
             quad.VertVaryings[0] = v0.Varyings;
             quad.VertVaryings[1] = v1.Varyings;
             quad.VertVaryings[2] = v2.Varyings;
+
+            // 预计算三角形顶点位置（避免在循环中重复创建Vector2）
+            float v0x = v0.ScreenPos.x, v0y = v0.ScreenPos.y;
+            float v1x = v1.ScreenPos.x, v1y = v1.ScreenPos.y;
+            float v2x = v2.ScreenPos.x, v2y = v2.ScreenPos.y;
 
             // 以2x2块为单位遍历
             for (int y = minY; y <= maxY; y += 2)
@@ -511,15 +522,17 @@ namespace SoftwareRenderer.Render.Software
                             int pixelIdx = py * 2 + px;
                             PixelContext pixel = quad.Pixels[pixelIdx];
 
-                            Vector2 p = new Vector2(x + px + 0.5f, y + py + 0.5f);
-                            Vector2 a = new Vector2(v0.ScreenPos.x, v0.ScreenPos.y);
-                            Vector2 b = new Vector2(v1.ScreenPos.x, v1.ScreenPos.y);
-                            Vector2 c = new Vector2(v2.ScreenPos.x, v2.ScreenPos.y);
+                            // 避免创建临时Vector2对象
+                            float px_center = x + px + 0.5f;
+                            float py_center = y + py + 0.5f;
 
-                            if (GeometryUtils.Barycentric2D(a, b, c, p, out Vector3 barycentric))
+                            if (GeometryUtils.Barycentric2D(v0x, v0y, v1x, v1y, v2x, v2y, px_center, py_center, out Vector3 barycentric))
                             {
                                 pixel.Samples[0].Inside = true;
-                                pixel.Samples[0].Barycentric = new Vector4(barycentric.x, barycentric.y, barycentric.z, 0);
+                                pixel.Samples[0].Barycentric.x = barycentric.x;
+                                pixel.Samples[0].Barycentric.y = barycentric.y;
+                                pixel.Samples[0].Barycentric.z = barycentric.z;
+                                pixel.Samples[0].Barycentric.w = 0;
                                 pixel.InitCoverage();
                                 anyInside = true;
                             }

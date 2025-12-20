@@ -16,6 +16,10 @@ namespace SoftwareRenderer.Render.Software
         private bool _isLinked;
 
         public bool IsValid => _isLinked;
+        
+        // 添加公共访问器，方便外部更新shader状态
+        public IVertexShader VertexShader => _vertexShader;
+        public IFragmentShader FragmentShader => _fragmentShader;
 
         public bool SetVertexShader(IVertexShader vs)
         {
@@ -48,13 +52,50 @@ namespace SoftwareRenderer.Render.Software
 
         public void ExecuteVertexShader(VertexArray vao, int vertexIndex, ref Vector4 clipPos, float[] varyings)
         {
-            if (_vertexShader == null) return;
+            if (_vertexShader == null)
+            {
+                // 如果没有顶点着色器，使用默认实现
+                // 读取位置属性（假设在location 0）
+                int stride = vao.Stride / sizeof(float);
+                int offset = vertexIndex * stride;
+                
+                if (offset + 2 < vao.VertexData.Length)
+                {
+                    Vector3 pos = new Vector3(
+                        vao.VertexData[offset + 0],
+                        vao.VertexData[offset + 1],
+                        vao.VertexData[offset + 2]
+                    );
+                    clipPos = new Vector4(pos.x, pos.y, pos.z, 1f);
+                }
+                return;
+            }
 
-            // 这里需要通过反射或其他方式调用顶点着色器
-            // 简化实现：假设_vertexShader有Execute方法
-            _vertexShader.Execute();
-
-            // 从shader获取输出（这里需要shader基类支持）
+            // 准备顶点着色器输入 - 从VAO读取顶点数据
+            if (_vertexShader is Shaders.VertexShaderBase vsBase)
+            {
+                // 读取顶点位置（假设在location 0，偏移为0）
+                int stride = vao.Stride / sizeof(float);
+                int offset = vertexIndex * stride;
+                
+                // 通过反射设置Position字段（这里简化处理）
+                var posField = vsBase.GetType().GetField("Position");
+                if (posField != null && offset + 2 < vao.VertexData.Length)
+                {
+                    Vector3 pos = new Vector3(
+                        vao.VertexData[offset + 0],
+                        vao.VertexData[offset + 1],
+                        vao.VertexData[offset + 2]
+                    );
+                    posField.SetValue(vsBase, pos);
+                }
+                
+                vsBase.PrepareExecution();
+                vsBase.Execute();
+                
+                // 从shader获取输出
+                clipPos = vsBase.Builtin.Position;
+            }
         }
 
         public ERGBA ExecuteFragmentShader(Vector4 fragCoord, bool frontFacing, float[] varyings)

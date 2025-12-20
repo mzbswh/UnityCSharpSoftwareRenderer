@@ -17,6 +17,8 @@ namespace SoftwareRenderer.Render
         void SetData(byte[] data, int layer = 0, int level = 0);
         void SetData(float[] data, int layer = 0, int level = 0);
         byte[] GetData(int layer = 0, int level = 0);
+        void GetData(byte[] buffer, int layer = 0, int level = 0); // 无GC分配版本
+        object GetRawData(int layer = 0, int level = 0); // 获取原始数据引用（零拷贝）
         void GenerateMipmaps();
     }
 }

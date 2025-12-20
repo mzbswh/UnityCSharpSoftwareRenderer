@@ -287,6 +287,40 @@ namespace SoftwareRenderer.Core.Math
         }
 
         /// <summary>
+        /// 2D重心坐标（无GC分配版本，用于光栅化热路径）
+        /// </summary>
+        public static bool Barycentric2D(float v0x, float v0y, float v1x, float v1y, float v2x, float v2y, 
+            float px, float py, out Vector3 barycentric)
+        {
+            float e0x = v1x - v0x;
+            float e0y = v1y - v0y;
+            float e1x = v2x - v0x;
+            float e1y = v2y - v0y;
+            float e2x = px - v0x;
+            float e2y = py - v0y;
+
+            float d00 = e0x * e0x + e0y * e0y;
+            float d01 = e0x * e1x + e0y * e1y;
+            float d11 = e1x * e1x + e1y * e1y;
+            float d20 = e2x * e0x + e2y * e0y;
+            float d21 = e2x * e1x + e2y * e1y;
+
+            float denom = d00 * d11 - d01 * d01;
+            if (Mathf.Abs(denom) < 1e-6f)
+            {
+                barycentric = Vector3.zero;
+                return false;
+            }
+
+            float v = (d11 * d20 - d01 * d21) / denom;
+            float w = (d00 * d21 - d01 * d20) / denom;
+            float u = 1.0f - v - w;
+
+            barycentric = new Vector3(u, v, w);
+            return u >= -1e-6f && v >= -1e-6f && w >= -1e-6f;
+        }
+
+        /// <summary>
         /// 线性插值（用于Varying数据）
         /// </summary>
         public static float Lerp(float a, float b, float t)

@@ -38,43 +38,70 @@ namespace SoftwareRenderer.Render.Software
         public void Init(float x, float y, int sampleCnt = 1)
         {
             Inside = false;
-            SampleCount = sampleCnt;
             Coverage = 0;
 
-            if (SampleCount > 1)
+            // 复用已存在的数组，避免每次都重新分配
+            if (SampleCount != sampleCnt)
             {
-                Samples = new SampleContext[SampleCount + 1]; // 最后一个存储中心采样
-                for (int i = 0; i <= SampleCount; i++)
+                SampleCount = sampleCnt;
+                
+                if (SampleCount > 1)
                 {
-                    Samples[i] = new SampleContext();
-                }
-
-                if (SampleCount == 4)
-                {
-                    // 设置4个子采样点
-                    for (int i = 0; i < SampleCount; i++)
+                    Samples = new SampleContext[SampleCount + 1]; // 最后一个存储中心采样
+                    for (int i = 0; i <= SampleCount; i++)
                     {
-                        Samples[i].FboCoord = new Vector2Int((int)x, (int)y);
-                        Samples[i].Position = new Vector4(
-                            _sampleLocations4X[i].x + x,
-                            _sampleLocations4X[i].y + y,
-                            0.0f, 0.0f
-                        );
+                        Samples[i] = new SampleContext();
                     }
-                    // 像素中心
-                    Samples[4].FboCoord = new Vector2Int((int)x, (int)y);
-                    Samples[4].Position = new Vector4(x + 0.5f, y + 0.5f, 0.0f, 0.0f);
-                    SampleShading = Samples[4];
                 }
+                else
+                {
+                    Samples = new SampleContext[1];
+                    Samples[0] = new SampleContext();
+                }
+            }
+
+            // 重置所有采样点的状态
+            if (Samples != null)
+            {
+                for (int i = 0; i < Samples.Length; i++)
+                {
+                    Samples[i].Inside = false;
+                }
+            }
+
+            if (SampleCount > 1 && SampleCount == 4)
+            {
+                int ix = (int)x;
+                int iy = (int)y;
+                
+                // 设置4个子采样点（避免重复创建 Vector2Int 和 Vector4）
+                for (int i = 0; i < 4; i++)
+                {
+                    Samples[i].FboCoord.x = ix;
+                    Samples[i].FboCoord.y = iy;
+                    Samples[i].Position.x = _sampleLocations4X[i].x + x;
+                    Samples[i].Position.y = _sampleLocations4X[i].y + y;
+                    Samples[i].Position.z = 0.0f;
+                    Samples[i].Position.w = 0.0f;
+                }
+                // 像素中心
+                Samples[4].FboCoord.x = ix;
+                Samples[4].FboCoord.y = iy;
+                Samples[4].Position.x = x + 0.5f;
+                Samples[4].Position.y = y + 0.5f;
+                Samples[4].Position.z = 0.0f;
+                Samples[4].Position.w = 0.0f;
+                SampleShading = Samples[4];
             }
             else
             {
-                Samples = new SampleContext[1];
-                Samples[0] = new SampleContext
-                {
-                    FboCoord = new Vector2Int((int)x, (int)y),
-                    Position = new Vector4(x + 0.5f, y + 0.5f, 0.0f, 0.0f)
-                };
+                // 单采样模式
+                Samples[0].FboCoord.x = (int)x;
+                Samples[0].FboCoord.y = (int)y;
+                Samples[0].Position.x = x + 0.5f;
+                Samples[0].Position.y = y + 0.5f;
+                Samples[0].Position.z = 0.0f;
+                Samples[0].Position.w = 0.0f;
                 SampleShading = Samples[0];
             }
         }
@@ -155,17 +182,22 @@ namespace SoftwareRenderer.Render.Software
             {
                 _varyingsAlignedCnt = size;
                 _varyingPool = new float[size * 4];
+                
+                // 确保Pixels数组已初始化
                 for (int i = 0; i < 4; i++)
                 {
+                    if (Pixels[i] == null)
+                    {
+                        Pixels[i] = new PixelContext();
+                    }
                     Pixels[i].VaryingsFrag = new float[_varyingsAlignedCnt];
-                    // 将_varyingPool的子数组赋值给每个像素的varying
-                    System.Array.Copy(_varyingPool, i * _varyingsAlignedCnt, Pixels[i].VaryingsFrag, 0, _varyingsAlignedCnt);
                 }
             }
         }
 
         public void Init(float x, float y, int sampleCnt = 1)
         {
+            // 确保Pixels数组已初始化（只在第一次调用时分配）
             for (int i = 0; i < 4; i++)
             {
                 if (Pixels[i] == null)

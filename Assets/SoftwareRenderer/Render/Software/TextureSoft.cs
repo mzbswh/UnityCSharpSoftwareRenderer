@@ -123,6 +123,51 @@ namespace SoftwareRenderer.Render.Software
             return null;
         }
 
+        /// <summary>
+        /// 获取纹理数据（无GC分配版本，优化性能）
+        /// </summary>
+        public void GetData(byte[] buffer, int layer = 0, int level = 0)
+        {
+            if (_desc.Format == ETextureFormat.RGBA8 && _imagesRGBA != null)
+            {
+                var imageBuffer = _imagesRGBA[layer].GetBuffer(level);
+                ERGBA[] srcData = imageBuffer.Data;
+                int pixelCount = srcData.Length;
+                int requiredSize = pixelCount * 4;
+
+                if (buffer == null || buffer.Length < requiredSize)
+                {
+                    UnityEngine.Debug.LogError($"Buffer size insufficient. Required: {requiredSize}, Provided: {buffer?.Length ?? 0}");
+                    return;
+                }
+
+                // 逐像素拷贝（兼容非unsafe模式）
+                // 注意：如果启用了unsafe编译，可以用更快的指针拷贝
+                int dstIdx = 0;
+                for (int i = 0; i < pixelCount; i++)
+                {
+                    ERGBA pixel = srcData[i];
+                    buffer[dstIdx++] = pixel.R;
+                    buffer[dstIdx++] = pixel.G;
+                    buffer[dstIdx++] = pixel.B;
+                    buffer[dstIdx++] = pixel.A;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 获取原始数据引用（零拷贝，最快）
+        /// 返回 ERGBA[] 数组的直接引用
+        /// </summary>
+        public object GetRawData(int layer = 0, int level = 0)
+        {
+            if (_desc.Format == ETextureFormat.RGBA8 && _imagesRGBA != null)
+            {
+                return _imagesRGBA[layer].GetBuffer(level).Data;
+            }
+            return null;
+        }
+
         public void GenerateMipmaps()
         {
             if (!_desc.GenerateMipmaps) return;

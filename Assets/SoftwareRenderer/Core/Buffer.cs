@@ -196,6 +196,10 @@ namespace SoftwareRenderer.Core
     /// <summary>
     /// RGBA颜色结构（字节类型）
     /// </summary>
+    /// <summary>
+    /// RGBA颜色值（每个分量8位）
+    /// </summary>
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
     public struct ERGBA
     {
         public byte R, G, B, A;

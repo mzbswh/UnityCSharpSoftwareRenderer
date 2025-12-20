@@ -37,6 +37,9 @@ namespace SoftwareRenderer.Unity
         private ITexture _depthTexture;
         private Texture2D _outputTexture;
 
+        // 复用的缓冲区，避免每帧分配
+        private byte[] _byteBuffer;
+
         // Uniform blocks
         private IUniformBlock _uniformBlockScene;
         private IUniformBlock _uniformBlockModel;
@@ -86,9 +89,12 @@ namespace SoftwareRenderer.Unity
             _mainFrameBuffer.AttachColor(_colorTexture);
             _mainFrameBuffer.AttachDepth(_depthTexture);
 
-            // 创建输出纹理
+            // 创建输出纹理（使用RGBA32格式）
             _outputTexture = new Texture2D(RenderWidth, RenderHeight, UnityEngine.TextureFormat.RGBA32, false);
             _outputTexture.filterMode = FilterMode.Point;
+
+            // 分配复用的字节缓冲区（RGBA = 4 bytes per pixel）
+            _byteBuffer = new byte[RenderWidth * RenderHeight * 4];
 
             if (OutputImage != null)
             {
@@ -117,7 +123,7 @@ namespace SoftwareRenderer.Unity
                     };
 
                     _sceneManager.AddModel(modelData);
-                    Debug.Log($"Added mesh: {meshFilter.name}");
+                    Debug.Log($"Added mesh: {meshFilter.name}, vertices: {vertexArray.VertexCount}, indices: {vertexArray.IndexCount}");
                 }
             }
 
@@ -125,6 +131,8 @@ namespace SoftwareRenderer.Unity
             _uniformBlockScene = _renderer.CreateUniformBlock("Scene", 256);
             _uniformBlockModel = _renderer.CreateUniformBlock("Model", 256);
             _uniformBlockMaterial = _renderer.CreateUniformBlock("Material", 256);
+
+            Debug.Log($"Scene setup complete. Total models: {_sceneManager.Models.Count}");
         }
 
         Scene.Material CreateDefaultMaterial()
@@ -137,7 +145,26 @@ namespace SoftwareRenderer.Unity
             };
 
             // 创建shader program
-            material.ShaderProgram = _renderer.CreateShaderProgram();
+            var shaderProgram = _renderer.CreateShaderProgram();
+
+            // 创建并设置一个简单的顶点着色器
+            var vs = new SimpleVertexShader
+            {
+                ViewProjectionMatrix = _sceneManager.MainCamera.GetViewProjectionMatrix()
+            };
+            shaderProgram.SetVertexShader(vs);
+
+            // 创建并设置一个简单的片元着色器
+            var fs = new SimpleFragmentShader
+            {
+                BaseColor = material.BaseColor
+            };
+            shaderProgram.SetFragmentShader(fs);
+
+            // 链接shader program
+            shaderProgram.Link();
+
+            material.ShaderProgram = shaderProgram;
 
             // 创建pipeline states
             RenderStates renderStates = RenderStates.Default();
@@ -152,6 +179,45 @@ namespace SoftwareRenderer.Unity
             return material;
         }
 
+        // 简单的顶点着色器
+        private class SimpleVertexShader : Shaders.VertexShaderBase
+        {
+            public Matrix4x4 ViewProjectionMatrix;
+            public Vector3 Position;
+
+            public override void Execute()
+            {
+                Vector4 pos = new Vector4(Position.x, Position.y, Position.z, 1f);
+                Builtin.Position = ViewProjectionMatrix * pos;
+            }
+
+            public override Render.IVertexShader Clone()
+            {
+                return new SimpleVertexShader { ViewProjectionMatrix = this.ViewProjectionMatrix };
+            }
+        }
+
+        // 简单的片元着色器
+        private class SimpleFragmentShader : Shaders.FragmentShaderBase
+        {
+            public Color BaseColor;
+
+            public override void Execute()
+            {
+                Builtin.FragColor = new ERGBA(
+                    (byte)(BaseColor.r * 255),
+                    (byte)(BaseColor.g * 255),
+                    (byte)(BaseColor.b * 255),
+                    (byte)(BaseColor.a * 255)
+                );
+            }
+
+            public override Render.IFragmentShader Clone()
+            {
+                return new SimpleFragmentShader { BaseColor = this.BaseColor };
+            }
+        }
+
         void Update()
         {
             RenderFrame();
@@ -161,6 +227,9 @@ namespace SoftwareRenderer.Unity
         void RenderFrame()
         {
             if (_renderer == null || _mainFrameBuffer == null) return;
+
+            // 更新相机矩阵
+            Matrix4x4 vpMatrix = _sceneManager.MainCamera.GetViewProjectionMatrix();
 
             // 开始渲染Pass
             ClearStates clearStates = ClearStates.Default();
@@ -172,6 +241,7 @@ namespace SoftwareRenderer.Unity
             _renderer.BeginRenderPass(_mainFrameBuffer, clearStates);
             _renderer.SetViewport(0, 0, RenderWidth, RenderHeight);
 
+            int drawnModels = 0;
             // 渲染所有模型
             foreach (var model in _sceneManager.Models)
             {
@@ -181,6 +251,9 @@ namespace SoftwareRenderer.Unity
 
                     if (model.Material.ShaderProgram != null)
                     {
+                        // 更新shader中的MVP矩阵
+                        UpdateShaderMatrices(model.Material.ShaderProgram, model.Transform, vpMatrix);
+
                         _renderer.SetShaderProgram(model.Material.ShaderProgram);
                     }
 
@@ -190,34 +263,72 @@ namespace SoftwareRenderer.Unity
                     }
 
                     _renderer.Draw();
+                    drawnModels++;
                 }
             }
 
             _renderer.EndRenderPass();
+
+            // 每60帧输出一次调试信息
+            if (Time.frameCount % 60 == 0)
+            {
+                Debug.Log($"Frame {Time.frameCount}: Drew {drawnModels} models");
+            }
+        }
+
+        void UpdateShaderMatrices(IShaderProgram shaderProgram, Matrix4x4 modelMatrix, Matrix4x4 vpMatrix)
+        {
+            // 计算MVP矩阵
+            Matrix4x4 mvpMatrix = vpMatrix * modelMatrix;
+
+            // 更新shader中的矩阵
+            if (shaderProgram is Render.Software.ShaderProgramSoft softShader)
+            {
+                if (softShader.VertexShader is SimpleVertexShader simpleVS)
+                {
+                    simpleVS.ViewProjectionMatrix = mvpMatrix;
+                }
+            }
         }
 
         void UpdateOutput()
         {
-            if (_colorTexture != null && _outputTexture != null)
+            if (_colorTexture != null && _outputTexture != null && _byteBuffer != null)
             {
-                // 从软件渲染器导出到Unity纹理
-                byte[] data = _colorTexture.GetData();
-                if (data != null)
+                // 零拷贝 - 直接获取ERGBA数组引用
+                ERGBA[] colorData = _colorTexture.GetRawData() as ERGBA[];
+                if (colorData != null)
                 {
-                    Color[] pixels = new Color[RenderWidth * RenderHeight];
-
-                    for (int i = 0; i < pixels.Length; i++)
+#if ENABLE_UNSAFE_CODE
+                    // 使用 unsafe 代码进行超快速拷贝
+                    unsafe
                     {
-                        pixels[i] = new Color(
-                            data[i * 4 + 0] / 255f,
-                            data[i * 4 + 1] / 255f,
-                            data[i * 4 + 2] / 255f,
-                            data[i * 4 + 3] / 255f
-                        );
+                        fixed (ERGBA* srcPtr = colorData)
+                        fixed (byte* dstPtr = _byteBuffer)
+                        {
+                            byte* src = (byte*)srcPtr;
+                            byte* dst = dstPtr;
+                            int size = colorData.Length * 4;
+                            System.Buffer.MemoryCopy(src, dst, size, size);
+                        }
                     }
+#else
+                    // 不使用unsafe的快速版本
+                    int pixelCount = colorData.Length;
+                    int dstIdx = 0;
+                    for (int i = 0; i < pixelCount; i++)
+                    {
+                        ERGBA pixel = colorData[i];
+                        _byteBuffer[dstIdx++] = pixel.R;
+                        _byteBuffer[dstIdx++] = pixel.G;
+                        _byteBuffer[dstIdx++] = pixel.B;
+                        _byteBuffer[dstIdx++] = pixel.A;
+                    }
+#endif
 
-                    _outputTexture.SetPixels(pixels);
-                    _outputTexture.Apply();
+                    // 直接使用LoadRawTextureData上传
+                    _outputTexture.LoadRawTextureData(_byteBuffer);
+                    _outputTexture.Apply(false);
                 }
             }
         }
